@@ -1,0 +1,45 @@
+name: Live AI evals
+
+# Runs the agent eval suite against the real Bedrock model (costs tokens), nightly and on demand.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  tutor-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Run guardrail + live tutor evals
+        env:
+          RUN_LIVE_LLM: "1"
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          OPENAI_BASE_URL: https://bedrock-mantle.us-east-1.api.aws/v1
+          LLM_CHAT_MODEL: openai.gpt-oss-120b
+        run: pytest tests/test_tutor_evals.py -v
+
+      - name: Summarize
+        if: always()
+        run: |
+          for f in reports/*-eval.json; do
+            [ -f "$f" ] || continue
+            echo "### $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
+            python -c "import json; r=json.load(open('$f')); print('passed **%s/%s**' % (r['passed'], r['cases']) + (', p50 %sms, %s tokens' % (r['p50_latency_ms'], r['total_tokens']) if 'p50_latency_ms' in r else ''))" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-reports
+          path: reports/
