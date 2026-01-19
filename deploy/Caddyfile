@@ -1,0 +1,21 @@
+# Caddy obtains and renews a Let's Encrypt certificate for API_DOMAIN on its own, and proxies
+# WebSocket upgrades without extra config — which the live leaderboard needs, because a page
+# served over https cannot open a plain ws:// socket.
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	# Refuse oversized bodies here, before they reach Python. An exam and its answer key are 20 MB
+	# each at most, so anything far beyond that is not a legitimate upload.
+	request_body {
+		max_size 45MB
+	}
+
+	reverse_proxy api:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+}
