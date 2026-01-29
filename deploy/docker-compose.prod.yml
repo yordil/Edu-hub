@@ -1,0 +1,112 @@
+# Production stack for one EC2 instance: Caddy (TLS) -> api, plus the ingestion worker and Redis.
+# The web app runs on Vercel, so it is not here.
+#
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d --build
+#
+# Postgres: either RDS/Aurora (point DATABASE_URL at it), or a local container with
+#   --profile localdb
+#
+# Differences from the development compose file, all deliberate:
+#   - Postgres and Redis publish no ports. Only Caddy is reachable from outside.
+#   - No seed step. The demo accounts share one known password.
+#   - Every service restarts on failure and on reboot.
+
+name: eduhub
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env.production}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here; losing this volume means re-issuing, and Let's Encrypt rate-limits that.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build: ..
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      # The api's port is not published, so the only peer that can reach it — and therefore the
+      # only one that can send X-Forwarded-* headers — is Caddy. Trusting all is safe here.
+      FORWARDED_ALLOW_IPS: "*"
+      LOCAL_STORAGE_DIR: /srv/var/uploads
+    # The image's default command: migrate, then serve. Never the seed script.
+    volumes:
+      - uploads:/srv/var/uploads
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+        # Absent when DATABASE_URL points at RDS instead of the localdb profile.
+        required: false
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  worker:
+    build: ..
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      LOCAL_STORAGE_DIR: /srv/var/uploads
+    # Claims papers straight from Postgres (SELECT ... FOR UPDATE SKIP LOCKED); needs no Redis.
+    command: python -m app.worker
+    # Lets a paper that's mid-parse finish before the container is killed.
+    stop_grace_period: 2m
+    volumes:
+      # Only needed with STORAGE_PROVIDER=local. With S3, api and worker share nothing on disk.
+      - uploads:/srv/var/uploads
+    depends_on:
+      # Waits for the api, which is what runs the migrations.
+      api:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Deliberately non-durable: it only holds live leaderboards, which rebuild from Postgres.
+    command: redis-server --save "" --appendonly no --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  db:
+    profiles: ["localdb"]
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: eduhub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD for --profile localdb}
+      POSTGRES_DB: eduhub
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eduhub -d eduhub"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
+  uploads:
+  caddy_data:
+  caddy_config:
