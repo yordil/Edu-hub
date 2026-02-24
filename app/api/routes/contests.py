@@ -1,8 +1,10 @@
 import asyncio
+import contextlib
 import uuid
 
 import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from redis.exceptions import RedisError
 
 from app.api.deps import CurrentUser, DbSession, StaffUser
 from app.core.config import get_settings
@@ -92,27 +94,35 @@ async def live_leaderboard(websocket: WebSocket, contest_id: uuid.UUID, ticket: 
         async with get_sessionmaker()() as session:
             await websocket.send_json(await live_service.snapshot(session, contest_id, user))
 
+    async def poll_database() -> None:
+        while True:
+            await asyncio.sleep(5)
+            await push()
+
     redis = get_redis()
     pubsub = None
     try:
         await push()
         if redis is None:
+            await poll_database()
+        try:
+            pubsub = redis.pubsub()
+            await pubsub.subscribe(live_service.keys(contest_id)[2])
             while True:
-                await asyncio.sleep(5)
-                await push()
-        pubsub = redis.pubsub()
-        await pubsub.subscribe(live_service.keys(contest_id)[2])
-        while True:
-            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=20)
-            if message is not None:
-                await push()
-            else:
-                await websocket.send_json({"type": "ping"})
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=20)
+                if message is not None:
+                    await push()
+                else:
+                    await websocket.send_json({"type": "ping"})
+        except RedisError:
+            # Redis went away mid-contest: keep this socket and serve the board from PostgreSQL instead.
+            await poll_database()
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         if pubsub is not None:
-            await pubsub.unsubscribe()
+            with contextlib.suppress(RedisError):
+                await pubsub.unsubscribe()
             await pubsub.aclose()
 
 
