@@ -9,7 +9,7 @@ WORKDIR /srv
 RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
-COPY requirements.txt .
+COPY requirements.txt constraints.txt ./
 RUN pip install -r requirements.txt
 
 COPY alembic.ini .
