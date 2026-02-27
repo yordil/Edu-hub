@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
-from testcontainers.community.postgres import PostgresContainer
+from testcontainers.postgres import PostgresContainer
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLES = (
