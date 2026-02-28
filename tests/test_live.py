@@ -93,6 +93,19 @@ def test_board_is_rebuilt_from_database_when_redis_is_empty(client, school, cont
         assert board["source"] == "redis" and board["me"]["score"] == 1
 
 
+def test_socket_survives_redis_going_down_mid_contest(client, school, contest, fake_redis):
+    c, bank = contest
+    play(client, c, bank, school["student"], correct=2)
+    with client.websocket_connect(f"{URL}/{c['id']}/live?ticket={ticket(client, c, school['student'])}") as ws:
+        assert ws.receive_json()["source"] == "redis"
+        fake_redis.connected = False  # Redis outage while the socket is open
+        board = ws.receive_json()
+        while board["type"] == "ping":
+            board = ws.receive_json()
+        assert board["type"] == "board" and board["source"] == "database"
+        assert board["rows"][0]["score"] == 2 and board["rows"][0]["is_me"] is True
+
+
 def test_falls_back_to_database_without_redis(client, school, contest):
     c, bank = contest
     play(client, c, bank, school["student"], correct=2)
